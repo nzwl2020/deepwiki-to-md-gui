@@ -219,44 +219,44 @@ class HtmlAdapter:
             if not pre_tag.get_text(strip=True):
                 pre_tag.decompose()
 
-    # ----- Wiki関連のメソッド -----
+    # ----- Wiki-related methods -----
 
     def extract_wiki_navigation(self, html_content: str) -> List[Dict[str, str]]:
         """
-        Wikiページのナビゲーションメニューからすべてのページリンクを抽出する。
+        Extracts all page links from the wiki page navigation menu.
 
         Args:
-            html_content: Wikiページ全体のHTML
+            html_content: Full HTML of the wiki page
 
         Returns:
-            List[Dict[str, str]]: [{"title": "ページタイトル", "url": "ページURL"}, ...]
+            List[Dict[str, str]]: [{"title": "Page Title", "url": "Page URL"}, ...]
         """
         soup = self.parse_html(html_content)
         navigation_links = []
 
-        # DeepWikiの特定のナビゲーション構造にマッチするセレクタを使用
+        # Use a selector that matches the current DeepWiki navigation structure.
         # XPath: //*[@id="codebase-wiki-repo-page"]/div[2]/div/div/div[1]/div/ul
         nav_ul = soup.select_one(
             "#codebase-wiki-repo-page > div:nth-child(2) > div > div > div:nth-child(1) > div > ul"
         )
 
         if nav_ul:
-            # ナビゲーションリンクを取得
+            # Collect navigation links.
             for li in nav_ul.find_all("li"):
                 link = li.find("a")
                 if link:
                     href = link.get("href")
                     title = link.get_text(strip=True)
 
-                    # リンクが有効な場合のみ処理
+                    # Process only valid links.
                     if href and title:
-                        # 相対URLを絶対URLに変換
+                        # Convert relative URLs to absolute URLs.
                         if not href.startswith("http"):
                             href = urljoin("https://deepwiki.com", href)
 
                         navigation_links.append({"title": title, "url": href})
 
-            # ナビゲーションリンクが見つかった場合、情報をログに出力
+            # Log the result when navigation links are found.
             if navigation_links:
                 print(f"Found {len(navigation_links)} navigation links")
         else:
@@ -268,44 +268,44 @@ class HtmlAdapter:
 
     def extract_wiki_content(self, html_content: str) -> str:
         """
-        Wikiページの主要コンテンツを抽出する。
+        Extracts the main content from a wiki page.
 
         Args:
-            html_content: Wikiページ全体のHTML
+            html_content: Full HTML of the wiki page
 
         Returns:
-            str: コンテンツ部分のHTML
+            str: HTML for the extracted content section
         """
         soup = self.parse_html(html_content)
 
-        # DeepWikiのWikiコンテンツ要素のセレクタ
-        # 注: 実際のHTMLを解析して適切なセレクタに調整する必要がある
+        # Selector for the DeepWiki content area.
+        # Note: This may need adjustment if the page structure changes.
         content_area = soup.select_one(".wiki-content, .main-content, article, main")
 
         if content_area:
-            # 不要な要素を削除（例: 編集ボタンなど）
+            # Remove unnecessary elements such as edit and action buttons.
             for button in content_area.select("button, .edit-button, .action-button"):
                 button.decompose()
 
             return str(content_area)
 
-        # コンテンツエリアが見つからない場合、body全体を返す
+        # If no dedicated content area is found, fall back to the full body.
         return str(soup.body) if soup.body else ""
 
     def extract_wiki_mermaid_diagrams(self, html_content: str) -> List[dict]:
         """
-        Wikiページ内のMermaid図を抽出する。
+        Extracts Mermaid diagrams from a wiki page.
 
         Args:
-            html_content: Wikiページ全体のHTML
+            html_content: Full HTML of the wiki page
 
         Returns:
-            List[dict]: 抽出されたMermaid図情報のリスト
+            List[dict]: A list of extracted Mermaid diagram metadata
         """
         soup = self.parse_html(html_content)
         diagrams = []
 
-        # コンテンツエリアを特定 (DeepWikiの構造に合わせる)
+        # Locate the content area based on the current DeepWiki structure.
         content_area = soup.select_one("#codebase-wiki-repo-page")
         if not content_area:
             content_area = soup.body
@@ -315,20 +315,20 @@ class HtmlAdapter:
 
         print("Searching for Mermaid diagrams in Wiki content...")
 
-        # DeepWikiのMermaidダイアグラム構造に合わせたセレクタ
+        # Selector tuned to the current DeepWiki Mermaid diagram structure.
         # XPath: //*[@id="codebase-wiki-repo-page"]/div[2]/div/div/div[2]/div[2]/div/div/div/div/pre[1]
         diagram_selector = 'pre:has(div[type="button"][aria-haspopup="dialog"] > div > svg[id^="mermaid-"])'
 
-        # すべてのpreタグを探す (デバッグ出力)
+        # Find all pre tags for debugging output.
         all_pre_tags = content_area.find_all("pre")
         print(f"Found {len(all_pre_tags)} pre tags in content")
 
-        # Mermaid図を探索
+        # Search for Mermaid diagrams.
         diagram_candidates = content_area.select(diagram_selector)
         print(f"Found {len(diagram_candidates)} potential Mermaid diagrams")
 
         for i, pre_tag_mermaid in enumerate(diagram_candidates):
-            # SVGタグを抽出
+            # Extract the SVG tag.
             svg_bs_tag_original = pre_tag_mermaid.select_one(
                 'div[type="button"][aria-haspopup="dialog"] > div > svg[id^="mermaid-"]'
             )

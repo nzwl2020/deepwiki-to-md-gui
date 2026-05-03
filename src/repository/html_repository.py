@@ -200,17 +200,17 @@ class HtmlRepository:
             placeholder_to_markdown_link_map=placeholder_map,
         )
 
-    # ----- Wiki関連のメソッド -----
+    # ----- Wiki-related methods -----
 
     def extract_wiki_navigation(self, html_content: str) -> List[Dict[str, str]]:
         """
-        Wikiサイトのナビゲーションリンク情報を抽出する。
+        Extracts navigation link information for a wiki site.
 
         Args:
-            html_content: Wikiページのhtml全体
+            html_content: Full HTML of the wiki page
 
         Returns:
-            List[Dict[str, str]]: [{"title": "ページタイトル", "url": "ページURL"}, ...]
+            List[Dict[str, str]]: [{"title": "Page Title", "url": "Page URL"}, ...]
         """
         return self.html_adapter.extract_wiki_navigation(html_content)
 
@@ -218,48 +218,48 @@ class HtmlRepository:
         self, html_content: str, title: str, url: str, page_number: int, output_dir: str
     ) -> WikiPage:
         """
-        Wikiページの内容を解析してWikiPageエンティティを作成する。
+        Parses wiki page content and creates a WikiPage entity.
 
         Args:
-            html_content: Wikiページのhtml
-            title: ページタイトル
-            url: ページURL
-            page_number: ページ番号
-            output_dir: 出力ディレクトリ
+            html_content: Wiki page HTML
+            title: Page title
+            url: Page URL
+            page_number: Page number
+            output_dir: Output directory
 
         Returns:
-            WikiPage: 作成されたWikiPageエンティティ
+            WikiPage: The created WikiPage entity
         """
-        # コンテンツの抽出
+        # Extract the page content.
         content_html = self.html_adapter.extract_wiki_content(html_content)
 
-        # Mermaid図の抽出と処理
+        # Extract and prepare Mermaid diagrams.
         diagram_infos = self.html_adapter.extract_wiki_mermaid_diagrams(html_content)
         diagrams = []
 
-        # コンテンツのコピーを作成（プレースホルダー置換のため）
+        # Create a content copy for placeholder replacement.
         content_copy = BeautifulSoup(content_html, "html.parser")
 
-        # 各Mermaid図を処理
+        # Process each Mermaid diagram.
         for diagram_idx, diagram_info in enumerate(diagram_infos):
             svg_tag = diagram_info["svg_tag"]
             pre_tag = diagram_info["pre_tag"]
 
-            # MermaidDiagram作成（chat_block_indexの代わりにpage_numberを使用）
+            # Create a MermaidDiagram, using page_number instead of chat_block_index.
             diagram = MermaidDiagram(
                 original_id=svg_tag.get("id", ""),
                 svg_content=svg_tag,
-                chat_block_index=page_number,  # ページ番号をチャットブロックインデックスとして使用
+                chat_block_index=page_number,  # Reuse page_number as the chat block index.
                 diagram_index=diagram_idx,
             )
 
-            # 図をリストに追加
+            # Add the diagram to the list.
             diagrams.append(diagram)
 
-            # SVGをプレースホルダーに置換（必要に応じて）
-            # HTML解析のままでは図が含まれない場合もあるので、コンテンツ解析方法によって調整
+            # Replace SVG with a placeholder if needed.
+            # Depending on the HTML parsing result, diagram replacement may need adjustment.
 
-        # WikiPage作成
+        # Create the WikiPage.
         return WikiPage(
             title=title,
             content=content_html,
@@ -272,37 +272,37 @@ class HtmlRepository:
         self, wiki_page: WikiPage, output_dir: str
     ) -> ProcessedAnswer:
         """
-        WikiページのコンテンツをMarkdown用に処理し、Mermaid図をファイルに保存する。
+        Processes wiki page content for Markdown output and saves Mermaid diagrams.
 
         Args:
-            wiki_page: 処理対象のWikiPageエンティティ
-            output_dir: 出力ディレクトリ
+            wiki_page: WikiPage entity to process
+            output_dir: Output directory
 
         Returns:
-            ProcessedAnswer: プレースホルダー付きのHTMLとプレースホルダーマップ
+            ProcessedAnswer: HTML with placeholders and a placeholder mapping
         """
-        # コンテンツのコピーを作成
+        # Create a copy of the content.
         content_copy = BeautifulSoup(wiki_page.content, "html.parser")
         placeholder_map = {}
 
-        # Mermaid図を再度抽出（pre_tagを取得するため）
+        # Extract Mermaid diagrams again so pre_tag references are available.
         diagram_infos = self.html_adapter.extract_wiki_mermaid_diagrams(
             wiki_page.content
         )
 
-        # 各Mermaid図を処理
+        # Process each Mermaid diagram.
         for i, (diagram, diagram_info) in enumerate(
             zip(wiki_page.diagrams, diagram_infos)
         ):
-            # 図を保存し、相対パスを取得
+            # Save the diagram and get its relative path.
             relative_svg_path = diagram.prepare_and_save(output_dir)
 
-            # プレースホルダー作成
+            # Create a placeholder.
             placeholder = self.html_adapter.create_placeholder(
                 diagram.chat_block_index, diagram.diagram_index
             )
 
-            # プレースホルダーとMarkdownリンクのマッピングに追加
+            # Add the placeholder and Markdown link to the mapping.
             if relative_svg_path:
                 placeholder_map[placeholder] = (
                     f"![Mermaid Diagram]({relative_svg_path})"
@@ -310,20 +310,20 @@ class HtmlRepository:
             else:
                 placeholder_map[placeholder] = ""
 
-            # 重要: HTMLのMermaid図をプレースホルダーに置換
+            # Important: replace Mermaid diagrams in the HTML with placeholders.
             if "pre_tag" in diagram_info and "svg_tag" in diagram_info:
                 pre_tag = diagram_info["pre_tag"]
                 svg_tag = diagram_info["svg_tag"]
                 svg_id = svg_tag.get("id", "")
 
-                # Mermaidダイアグラムに特化したセレクタを使用してpreタグを探す
+                # Find the pre tag using a Mermaid-specific selector.
                 mermaid_selector = (
                     f'pre:has(div[type="button"] > div > svg[id="{svg_id}"])'
                 )
                 matching_pre = content_copy.select(mermaid_selector)
 
                 if matching_pre:
-                    # 見つかったpreタグをプレースホルダーに置換
+                    # Replace the matched pre tag with the placeholder.
                     self.html_adapter.replace_svg_with_placeholder(
                         matching_pre[0], placeholder
                     )
@@ -331,11 +331,11 @@ class HtmlRepository:
                         f"Replaced diagram with id {svg_id} with placeholder: {placeholder}"
                     )
                 else:
-                    # IDベースの検索に失敗した場合、位置ベースで試みる
+                    # Fall back to a position-based approach if ID matching fails.
                     print(
                         f"Could not find exact match for diagram {i} with id {svg_id}, trying position-based approach"
                     )
-                    # Mermaidダイアグラムに特化したセレクタでpreタグを探す
+                    # Look up pre tags using a Mermaid-specific selector.
                     mermaid_pre_tags = content_copy.select(
                         'pre:has(div[type="button"][aria-haspopup="dialog"] > div > svg[id^="mermaid-"])'
                     )
@@ -351,12 +351,12 @@ class HtmlRepository:
                             f"Warning: Could not find appropriate pre tag for diagram {i}"
                         )
 
-        # コンテンツのクリーンアップ
+        # Clean up the content.
         if isinstance(content_copy, BeautifulSoup):
             self.html_adapter.unwrap_nested_pre_tags(content_copy)
             self.html_adapter.remove_empty_pre_tags(content_copy)
 
-        # プレースホルダー付きHTMLとプレースホルダーマップを返す
+        # Return HTML with placeholders and the placeholder map.
         return ProcessedAnswer(
             html_content_with_placeholders=str(content_copy),
             placeholder_to_markdown_link_map=placeholder_map,

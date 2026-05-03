@@ -20,6 +20,7 @@ from src.domain.constants import (
     FOREIGN_OBJECT_TEXT_STYLE,
 )
 
+from src.domain.url_parser import parse_deepwiki_url
 
 @dataclass
 class MermaidDiagram:
@@ -89,14 +90,14 @@ class MermaidDiagram:
             if text_element.has_attr("style"):  # Remove conflicting inline styles
                 del text_element["style"]
 
-        # シーケンス図のparticipant（actor）のテキスト位置を修正
+        # Adjust participant (actor) text positioning in sequence diagrams.
         is_sequence = (
             svg_tag.has_attr("aria-roledescription")
             and svg_tag["aria-roledescription"] == "sequence"
         )
 
         if is_sequence:
-            # クラス属性に"actor"を含む要素を探す（複数のクラスを持つ場合も対応）
+            # Find text elements whose class list includes "actor".
             actor_texts = svg_tag.find_all(
                 lambda tag: tag.name == "text"
                 and tag.has_attr("class")
@@ -105,19 +106,19 @@ class MermaidDiagram:
             )
 
             for actor_text in actor_texts:
-                # テキスト要素自体の設定
+                # Update the text element itself.
                 actor_text["text-anchor"] = "start"
 
-                # テキスト要素内のtspanも処理
+                # Update nested tspans as well.
                 for tspan in actor_text.find_all("tspan", recursive=True):
                     if actor_text.has_attr("x"):
-                        # 親グループ内のrectを探し、その位置を基準にする
+                        # Use the sibling rect position as the alignment reference.
                         parent_g = actor_text.parent
                         if parent_g.name == "g":
                             rect = parent_g.find("rect", recursive=False)
                             if rect.has_attr("x"):
                                 rect_x = float(rect["x"])
-                                # ボックスの左端 + 余白
+                                # Align to the left edge of the box with padding.
                                 tspan["x"] = str(rect_x + 15)
 
         # Apply to HTML content within <foreignObject>
@@ -293,20 +294,20 @@ class WikiPage:
     title: str
     content: str
     url: str
-    page_number: int  # ページ番号（出力ファイル名の接頭辞用）
+    page_number: int  # Page number used as the output filename prefix.
     diagrams: List[MermaidDiagram] = field(default_factory=list)
 
     def _sanitize_filename(self, name: str) -> str:
         """
-        ファイル名に使用できない文字を置換する。
+        Replaces characters that are invalid in filenames.
         """
         sanitized = re.sub(r'[\\/*?:"<>|]', "", name.lower().replace(" ", "-"))
-        return sanitized[:100]  # 長すぎるファイル名を防止
+        return sanitized[:100]  # Prevent excessively long filenames.
 
     def get_filename(self) -> str:
         """
-        ページのMarkdownファイル名を生成する。
-        例: '1-langchain-overview.md'
+        Generates the Markdown filename for the page.
+        Example: '1-langchain-overview.md'
         """
         return f"{self.page_number}-{self._sanitize_filename(self.title)}.md"
 
@@ -317,38 +318,39 @@ class WikiSite:
     Represents a collection of Wiki pages and metadata about the site.
     """
 
-    organization: str  # URLから抽出する組織名（例: langchain-ai）
-    repository: str  # URLから抽出するリポジトリ名（例: langchain）
+    organization: str  # Organization name extracted from the URL, e.g. langchain-ai.
+    repository: str  # Repository name extracted from the URL, e.g. langchain.
     pages: List[WikiPage] = field(default_factory=list)
 
     def add_page(self, page: WikiPage) -> None:
         """
-        WikiSiteにページを追加する。
+        Adds a page to the WikiSite.
         """
         self.pages.append(page)
 
     def get_output_directory(self, base_dir: str) -> str:
         """
-        出力ディレクトリパスを生成する。
-        例: 'base_dir/wiki/langchain-ai/langchain/'
+        Generates the output directory path.
+        Example: 'base_dir/wiki/langchain-ai/langchain/'
         """
         return os.path.join(base_dir, "wiki", self.organization, self.repository)
 
     @classmethod
     def from_url(cls, url: str) -> "WikiSite":
         """
-        URLからWikiSiteオブジェクトを作成する。
-        例: https://deepwiki.com/langchain-ai/langchain
-        """
-        parsed_url = urlparse(url)
-        path_parts = parsed_url.path.strip("/").split("/")
+        Builds a WikiSite from a DeepWiki wiki URL.
 
-        if len(path_parts) < 2:
+        URL parsing is delegated to the shared parser so GUI and CLI
+        both follow the same validation rules.
+        """
+        parsed = parse_deepwiki_url(url)
+        if parsed.mode != "wiki" or not parsed.organization or not parsed.repository:
             raise ValueError(
-                f"Invalid DeepWiki URL format: {url}. Expected format: https://deepwiki.com/organization/repository"
+                f"Invalid DeepWiki wiki URL format: {url}. "
+                "Expected format: https://deepwiki.com/organization/repository"
             )
 
-        organization = path_parts[0]
-        repository = path_parts[1]
-
-        return cls(organization=organization, repository=repository)
+        return cls(
+            organization=parsed.organization,
+            repository=parsed.repository,
+        )

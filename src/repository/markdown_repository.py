@@ -50,27 +50,27 @@ class MarkdownRepository:
         """
         return chat_log.to_markdown(self.markdown_adapter)
 
-    # ----- Wiki関連のメソッド -----
+    # ----- Wiki-related methods -----
 
     def convert_wiki_to_markdown(
         self, wiki_page: WikiPage, processed_content: ProcessedAnswer
     ) -> str:
         """
-        WikiページをMarkdownに変換する。
+        Converts a wiki page to Markdown.
 
         Args:
-            wiki_page: 変換対象のWikiPageエンティティ
-            processed_content: 処理済みのページコンテンツ
+            wiki_page: WikiPage entity to convert
+            processed_content: Processed page content
 
         Returns:
-            str: 変換されたMarkdown
+            str: Converted Markdown
         """
-        # 基本的なコンテンツをMarkdownに変換
+        # Convert the base content to Markdown.
         markdown_content = self.markdown_adapter.convert_html_to_markdown(
             processed_content.html_content_with_placeholders
         )
 
-        # Mermaid図のプレースホルダーを置き換え
+        # Replace Mermaid diagram placeholders.
         for (
             placeholder,
             md_link,
@@ -82,20 +82,20 @@ class MarkdownRepository:
                     f"Warning: Placeholder '{placeholder}' not found in markdownified content for replacement."
                 )
 
-        # タイトルをページの先頭に追加
+        # Add the page title to the beginning of the document.
         title_prefix = f"# {wiki_page.title}\n\n"
 
         return title_prefix + markdown_content
 
     def generate_wiki_index(self, wiki_site: WikiSite) -> str:
         """
-        Wiki全体の目次ページを生成する。
+        Generates the table of contents page for the entire wiki.
 
         Args:
-            wiki_site: WikiSiteエンティティ
+            wiki_site: WikiSite entity
 
         Returns:
-            str: 目次ページのMarkdown
+            str: Markdown for the table of contents page
         """
         lines = [
             f"# {wiki_site.repository} Wiki",
@@ -105,7 +105,7 @@ class MarkdownRepository:
             "",
         ]
 
-        # ページリンクのリストを生成
+        # Build the list of page links.
         for page in wiki_site.pages:
             filename = page.get_filename()
             lines.append(f"- [{page.title}]({filename})")

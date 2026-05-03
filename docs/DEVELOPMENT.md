@@ -1,349 +1,581 @@
-# deepwiki-to-md 開発者向けドキュメント
+# deepwiki-to-md-gui 开发文档
 
-## 1. アーキテクチャ
+## 1. 项目概述
 
-`deepwiki-to-md`プロジェクトは、クリーンアーキテクチャを採用しています。
-これにより、関心事の分離、テスト容易性の向上、保守性の高いコードベースを実現しています。
+`deepwiki-to-md-gui` 是一个用于导出 DeepWiki 内容的桌面图形化工具。
 
-### 1.1. アーキテクチャ概要
+项目目标是将 DeepWiki 上的两类内容导出到本地 Markdown 文件中：
 
-以下の図は、システムの主要なレイヤーとその依存関係を示します。
+1. 仓库解读文档（Wiki）
+2. 用户会话记录（Chat）
+
+本 fork 版本以 **Windows 桌面 GUI 使用体验** 为核心，不再以 Docker 或命令行工具作为主要交付方式。
+
+---
+
+## 2. 架构设计
+
+### 2.1 架构目标
+
+本项目采用分层设计，核心目标如下：
+
+- 将界面逻辑与业务逻辑解耦
+- 让 GUI 层尽可能薄
+- 让抓取、解析、导出逻辑可单独测试
+- 降低未来替换 GUI 框架或网页抓取实现的成本
+- 保持 chat / wiki 两条导出链路在结构上统一
+
+### 2.2 分层结构
 
 ```mermaid
 graph TD
-    E[ユーザーインターフェース層 interface] --> D[ユースケース層 usecase]
-    D --> A[ドメイン層 domain]
-    D --> B[リポジトリ層 repository]
-    B --> A
-    B --> C[ゲートウェイ層 gateway]
-    C --> F[外部ライブラリ Playwright BeautifulSoup etc]
-
-    style F fill:#f0f0f0,stroke:#ddd
+    UI["界面层 interface"] --> UC["用例层 usecase"]
+    UI --> BOOT["装配层 bootstrap"]
+    UC --> DOMAIN["领域层 domain"]
+    UC --> REPO["仓储层 repository"]
+    REPO --> GATEWAY["网关层 gateway"]
+    GATEWAY --> EXT["外部依赖 Playwright / BeautifulSoup / PySide6 / markdownify"]
 ```
 
-| 要素名                                 | 説明                                                                 |
-| :------------------------------------- | :------------------------------------------------------------------- |
-| ユーザーインターフェース層 (interface)         | ユーザーとの対話（CLI）や外部システムとの入出力を担当します。                |
-| ユースケース層 (usecase)             | アプリケーション固有のビジネスロジックを実装し、ドメイン層とリポジトリ層を調整します。 |
-| ドメイン層 (domain)                  | コアなビジネスロジックとエンティティ（データ構造）を含みます。外部依存を持ちません。     |
-| リポジトリ層 (repository)            | ドメインオブジェクトとデータ永続化（ゲートウェイ経由）の間の抽象化レイヤーです。       |
-| ゲートウェイ層 (gateway)             | 外部ライブラリや外部サービスとの具体的な通信を実装するアダプターを含みます。         |
-| 外部ライブラリ (Playwright, BeautifulSoup等) | Webアクセス、HTML解析、Markdown変換などを行うサードパーティ製のライブラリです。  |
+### 2.3 各层职责
 
-### 1.2. レイヤー構成とディレクトリ構造
+| 层级 | 目录 | 职责 |
+|------|------|------|
+| 界面层 | `src/interface` | 提供 GUI 入口、后台任务线程、日志显示、用户输入处理 |
+| 用例层 | `src/usecase` | 组织 chat/wiki 导出流程，协调仓储层与领域层 |
+| 领域层 | `src/domain` | 定义核心实体、URL 解析规则、导出结果模型 |
+| 仓储层 | `src/repository` | 连接业务逻辑与具体实现，负责数据转换与流程拼装 |
+| 网关层 | `src/gateway` | 封装 Playwright、文件系统、Markdown 转换等外部能力 |
 
-ソースコードは以下のディレクトリ構造で各層に対応して配置されます。
-```
+---
+
+## 3. 目录结构
+
+### 3.1 当前目录结构
+
+```text
 src/
 ├── domain/
 │   ├── __init__.py
-│   ├── constants.py         # SVG処理などの定数
-│   └── entities.py          # すべてのエンティティクラス (MermaidDiagram, ChatBlockContent, WikiPage, WikiSite 等)
-│
-├── usecase/
-│   ├── __init__.py
-│   ├── chat_page_usecase.py # ConvertChatPageToMarkdownUsecase
-│   └── wiki_site_usecase.py # ConvertWikiSiteToMarkdownUsecase
-│
-├── repository/
-│   ├── __init__.py
-│   ├── web_repository.py    # WebRepository
-│   ├── html_repository.py   # HtmlRepository
-│   ├── markdown_repository.py # MarkdownRepository
-│   └── file_repository.py   # FileRepository
+│   ├── constants.py
+│   ├── entities.py
+│   ├── export_models.py
+│   └── url_parser.py
 │
 ├── gateway/
 │   ├── __init__.py
-│   ├── web_adapter.py       # WebAdapter (Playwright使用)
-│   ├── html_adapter.py      # HtmlAdapter (BeautifulSoup使用)
-│   ├── markdown_adapter.py  # MarkdownAdapter (markdownify使用)
-│   └── file_adapter.py      # FileAdapter (os操作)
+│   ├── web_adapter.py
+│   ├── html_adapter.py
+│   ├── markdown_adapter.py
+│   └── file_adapter.py
+│
+├── repository/
+│   ├── __init__.py
+│   ├── web_repository.py
+│   ├── html_repository.py
+│   ├── markdown_repository.py
+│   └── file_repository.py
+│
+├── usecase/
+│   ├── __init__.py
+│   ├── chat_page_usecase.py
+│   └── wiki_site_usecase.py
 │
 └── interface/
     ├── __init__.py
-    └── cli.py               # CLI処理と例外ハンドリング
+    ├── bootstrap.py
+    ├── gui_worker.py
+    └── gui_app.py
 ```
 
-**各層の責務:**
+### 3.2 关键文件说明
 
-* **ドメイン層 (`domain`)**:
-    * ビジネスロジックとエンティティ（例: `MermaidDiagram`, `ChatBlockContent`, `WikiPage`, `WikiSite`）を含みます。
-    * これらのクラスは、外部依存を持たない純粋なビジネスロジックを表現します。
-* **ユースケース層 (`usecase`)**:
-    * ドメイン層のエンティティやロジック、およびリポジトリ層を通じて、具体的なアプリケーションの機能（例: チャットページ変換、Wikiサイト変換）を実現する手順を実装します。
-    * 複雑なビジネスロジックはドメイン層に委譲します。
-* **リポジトリ層 (`repository`)**:
-    * ドメインオブジェクトと外部リソース（Webページ、ファイルシステムなど）間のデータの永続化や取得を抽象化します。
-    * ゲートウェイ層のアダプターを利用して、具体的なデータ操作を行います。
-    * 入力と出力はドメイン層の型を使用します。
-* **ゲートウェイ層 (`gateway`)**:
-    * 外部システムやライブラリ（Playwright, BeautifulSoup, markdownify, OS機能など）との具体的な通信や操作を担当するアダプターを配置します。
-* **ユーザーインターフェース層 (`interface`)**:
-    * CLI（コマンドラインインターフェース）を提供し、ユーザーからの入力を受け付け、ユースケースを実行し、結果を表示します。
-    * 例外処理もこの層で集約的に行うことを基本とします。
+- `src/interface/gui_app.py`
+  - GUI 主窗口入口
+  - 负责输入 URL、选择输出目录、显示日志、展示结果
+- `src/interface/gui_worker.py`
+  - 在后台线程中执行导出任务
+  - 防止 Playwright 抓取过程阻塞主线程
+- `src/interface/bootstrap.py`
+  - 统一组装 adapter / repository / usecase
+  - 避免 GUI 层直接依赖底层实现细节
+- `src/domain/url_parser.py`
+  - 统一识别 DeepWiki URL 类型
+  - 自动判断是 `chat` 还是 `wiki`
+- `src/domain/export_models.py`
+  - 定义 `ExportResult`、`ProgressEvent` 等结构化模型
+- `src/usecase/chat_page_usecase.py`
+  - 负责 Chat 导出业务流程
+- `src/usecase/wiki_site_usecase.py`
+  - 负责 Wiki 导出业务流程
 
-### 1.3. 設計上の決定事項
+---
 
-1.  **Repository**:
-    * 入力と出力はドメイン層の型を使用します。
-    * 外部依存（アダプター）の結果をドメインオブジェクトに変換します。
-2.  **Usecase**:
-    * ドメイン層とRepositoryを組み合わせる手順のみを実装します。
-    * 複雑なビジネスロジックはドメイン層に移動させます。
-3.  **例外処理**:
-    * 基本的には`cli`レイヤー（ユーザーインターフェース層）でのみ例外をキャッチします。
-    * アダプターでは、必要に応じてリトライ処理のために例外を扱うことがあります。
-4.  **モジュール分割**:
-    * 単一責任の原則に従い、各クラスが特定の役割に特化するようにします。
-    * 依存関係を明示的に管理し、循環依存を回避します。
-5.  **Playwrightの使用**:
-    * Playwrightを使用してDeepWikiコンテンツにアクセスします。ブラウザ自動化によりSPA（Single Page Application）で動的に生成されるコンテンツも取得可能です。
+## 4. 主要数据流
 
-### 1.4. 主要なデータフロー (チャット変換時)
-
-以下は、ユーザーがチャット変換コマンドを実行した際の主要なデータフローを示すシーケンス図です。
+### 4.1 Chat 导出流程
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant CLI as interface.cli
-    participant Usecase as usecase.ConvertChatPageToMarkdownUsecase
-    participant WebRepo as repository.WebRepository
-    participant HtmlRepo as repository.HtmlRepository
-    participant MDRepo as repository.MarkdownRepository
-    participant FileRepo as repository.FileRepository
-    participant WebAdapter as gateway.WebAdapter
-    participant HtmlAdapter as gateway.HtmlAdapter
-    participant MDAdapter as gateway.MarkdownAdapter
-    participant FileAdapter as gateway.FileAdapter
+    participant User as 用户
+    participant GUI as interface.gui_app
+    participant Worker as interface.gui_worker
+    participant Usecase as usecase.chat_page_usecase
+    participant WebRepo as repository.web_repository
+    participant HtmlRepo as repository.html_repository
+    participant MdRepo as repository.markdown_repository
+    participant FileRepo as repository.file_repository
+    participant WebAdapter as gateway.web_adapter
+    participant HtmlAdapter as gateway.html_adapter
+    participant MdAdapter as gateway.markdown_adapter
+    participant FileAdapter as gateway.file_adapter
 
-    User->>CLI: main(url, output_base_dir)
-    CLI->>Usecase: execute(url, output_base_dir)
-
-    Usecase->>Usecase: _extract_chat_id_from_url(url)
-    Usecase->>FileRepo: ensure_directory(output_dir for chat_id)
-    FileRepo->>FileAdapter: create_directory(dirpath)
+    User->>GUI: 输入 URL 和输出目录
+    GUI->>Worker: 启动后台导出任务
+    Worker->>Usecase: execute(url, output_dir)
 
     Usecase->>WebRepo: fetch_content(url)
     WebRepo->>WebAdapter: fetch(url)
-    WebAdapter-->>WebRepo: page_html (str)
-    WebRepo-->>Usecase: page_html (str)
+    WebAdapter-->>WebRepo: page_html
+    WebRepo-->>Usecase: page_html
 
-    Usecase->>HtmlRepo: extract_chat_blocks(page_html, output_dir for images)
-    HtmlRepo->>HtmlAdapter: extract_chat_block_snippets(page_html)
-    HtmlAdapter-->>HtmlRepo: snippets (List[str])
+    Usecase->>HtmlRepo: extract_chat_blocks(page_html, output_dir)
+    HtmlRepo-->>Usecase: chat_blocks
 
-    loop For each snippet
-        HtmlRepo->>HtmlAdapter: parse_html(snippet)
-        HtmlAdapter-->>HtmlRepo: block_soup (BeautifulSoup object)
-        HtmlRepo->>HtmlAdapter: extract_query_from_block(block_soup)
-        HtmlAdapter-->>HtmlRepo: query (str)
-        HtmlRepo->>HtmlAdapter: extract_answer_area(block_soup)
-        HtmlAdapter-->>HtmlRepo: answer_area (BeautifulSoup object)
-        HtmlRepo->>HtmlAdapter: extract_code_references(block_soup)
-        HtmlAdapter-->>HtmlRepo: references_data (List[Dict])
-        %% HTMLRepo内でChatBlockContentオブジェクト等を生成
-        HtmlRepo-->>Usecase: chat_blocks (List[ChatBlockContent])
-    end
+    Usecase->>MdRepo: convert_chat_log_to_markdown(chat_log)
+    MdRepo-->>Usecase: markdown_text
 
-    Usecase->>MDRepo: convert_chat_log_to_markdown(chat_log: ChatLog)
-    %% MDRepo内でMermaid図の処理、画像パスの置換などを行う
-    MDRepo->>MDAdapter: convert_html_to_markdown(html_string_of_answer)
-    MDAdapter-->>MDRepo: markdown_text (str)
-    MDRepo-->>Usecase: final_markdown (str)
-
-    Usecase->>FileRepo: save_markdown(final_markdown, output_md_filepath)
+    Usecase->>FileRepo: save_markdown(markdown_text, filepath)
     FileRepo->>FileAdapter: write_file(filepath, content)
 
-    CLI-->>User: 変換完了メッセージ
+    Usecase-->>Worker: ExportResult
+    Worker-->>GUI: 发送进度与完成信号
+    GUI-->>User: 显示完成结果
 ```
 
-| 要素名                                         | 説明                                                                         |
-| :--------------------------------------------- | :--------------------------------------------------------------------------- |
-| User                                           | エンドユーザーです。                                                               |
-| CLI (interface.cli)                            | コマンドラインインターフェースを受け付け、ユースケースを呼び出します。                         |
-| Usecase (ConvertChatPageToMarkdownUsecase)     | チャットページ変換のビジネスロジックフローを制御します。                                 |
-| WebRepo (repository.WebRepository)             | Webコンテンツの取得を抽象化します。                                                      |
-| HtmlRepo (repository.HtmlRepository)           | HTMLの解析とドメインオブジェクトへの変換を抽象化します。                                     |
-| MDRepo (repository.MarkdownRepository)         | ドメインオブジェクトからMarkdownへの変換を抽象化します。                                   |
-| FileRepo (repository.FileRepository)           | ファイルシステムの操作を抽象化します。                                                     |
-| WebAdapter (gateway.WebAdapter)                | Playwrightを使い、実際にWebページを取得します。                                          |
-| HtmlAdapter (gateway.HtmlAdapter)              | BeautifulSoupを使い、HTML要素を抽出・解析します。                                        |
-| MDAdapter (gateway.MarkdownAdapter)            | markdownifyを使い、HTMLをMarkdownに変換します。                                        |
-| FileAdapter (gateway.FileAdapter)              | OS標準機能等を使い、ファイルやディレクトリを操作します。                                       |
-| `_extract_chat_id_from_url(url)`               | URLからチャットIDを抽出する内部処理です。                                                |
-| `ensure_directory(...)`                        | 指定されたパスにディレクトリが存在することを確認し、なければ作成します。                             |
-| `Workspace_content(url)`                           | 指定URLのHTMLコンテンツを取得します。                                                    |
-| `extract_chat_blocks(...)`                     | HTMLからチャットの各ブロック(質問、回答、参照コードなど)を抽出します。                             |
-| `convert_chat_log_to_markdown(...)`            | 抽出されたチャットブロック情報を元に、最終的なMarkdown文字列を生成します。                         |
-| `save_markdown(...)`                           | 生成されたMarkdown文字列を指定されたファイルパスに保存します。                                   |
+### 4.2 Wiki 导出流程
 
+Wiki 导出和 Chat 类似，但会多出一个“导航解析 + 多页面抓取”过程：
 
-### 1.5. 設計パターン
+1. 访问 Wiki 首页
+2. 提取导航链接
+3. 逐页抓取和解析
+4. 导出每个页面的 Markdown
+5. 生成 `index.md`
+6. 返回最终导出结果
 
-本プロジェクトでは、以下の設計パターンを活用しています。
+---
 
-1.  **アダプターパターン**:
-    * 外部ライブラリ（Playwright, BeautifulSoup, markdownify, osモジュール）との連携を抽象化するために、各ゲートウェイコンポーネント（`WebAdapter`, `HtmlAdapter`, `MarkdownAdapter`, `FileAdapter`）で採用しています。これにより、ライブラリの変更がシステム全体に与える影響を最小限に抑えます。
-2.  **リポジトリパターン**:
-    * データアクセスロジック（Web、HTML解析、Markdown変換、ファイル操作）をドメイン層から分離し、抽象化するために採用しています。各リポジトリ（`WebRepository`, `HtmlRepository`, `MarkdownRepository`, `FileRepository`）が対応します。
-3.  **データクラスの活用**:
-    * ドメインエンティティ（`ChatBlockContent`, `ProcessedAnswer`, `MermaidDiagram`, `WikiPage`, `WikiSite`など）は、Pythonの`dataclass`を積極的に利用して実装しています。これにより、データ構造の定義を簡潔にし、関連する操作メソッドをクラスに持たせることができます。
-4.  **依存性の注入 (Dependency Injection)**:
-    * ユースケース層のクラスやリポジトリ層のクラスは、コンストラクタを通じて、依存する他のコンポーネント（他のリポジトリやアダプター）を受け取ります。
-        ```python
-        # ユースケースクラスのコンストラクタ例
-        class ConvertWikiSiteToMarkdownUsecase:
-            def __init__(
-                self,
-                web_repository: WebRepository,
-                html_repository: HtmlRepository,
-                markdown_repository: MarkdownRepository,
-                file_repository: FileRepository,
-            ):
-                self.web_repository = web_repository
-                self.html_repository = html_repository
-                self.markdown_repository = markdown_repository
-                self.file_repository = file_repository
-        ```
-    * これにより、以下の利点があります。
-        * **テスト容易性の向上**: モックオブジェクトを容易に注入でき、単体テストがしやすくなります。
-        * **結合度の低減**: クラス間の依存関係が明確になり、疎結合な設計を促進します。
-        * **拡張性の向上**: 依存コンポーネントの実装を差し替えることが容易になります。
-5.  **コマンドパターン**:
-    * CLIインターフェースにおいて、`chat`コマンドと`wiki`コマンドは、統一されたインターフェース（サブコマンドとURL、オプションの出力ディレクトリ）で利用できるように実装されています。各コマンドの具体的な処理は、それぞれのユースケースクラスにカプセル化されています。
-6.  **URL解析と自動ディレクトリ構造**:
-    * 入力されたURLを解析し、コンテンツの種類（wikiかchatか）や識別子（組織名/リポジトリ名、チャットID）を抽出します。
-    * 抽出した情報に基づいて、出力先のディレクトリ構造を自動的に生成します。
-        * **wiki**: `{output_base_dir}/wiki/{organization}/{repository}/`
-        * **chat**: `{output_base_dir}/chat/{chat_id}/`
+## 5. 核心设计约定
 
-## 2. 開発環境
+### 5.1 GUI 只负责界面，不负责业务实现
 
+GUI 层只做这些事：
 
-### 2.1. 環境構築
+- 接收用户输入
+- 启动后台任务
+- 展示日志和结果
+- 提供“打开输出目录”等交互动作
+
+GUI 层不应负责：
+
+- URL 解析规则
+- 页面抓取细节
+- HTML 结构解析
+- Markdown 拼装
+- 文件命名和输出路径规则
+
+这些能力应保留在 `domain`、`usecase`、`repository`、`gateway` 中。
+
+### 5.2 URL 识别统一放在 `url_parser.py`
+
+不要在 GUI、usecase、adapter 中重复解析 URL。  
+统一通过 `parse_deepwiki_url(url)` 得到：
+
+- 模式：`chat` / `wiki`
+- chat id
+- organization / repository
+
+这样可以保证：
+
+- GUI 的模式识别逻辑和业务执行逻辑一致
+- 后续修改 URL 规则时只改一个地方
+
+### 5.3 进度和结果必须结构化
+
+不要依赖零散的 `print` 文本传递状态。  
+导出流程对 GUI 的反馈应通过结构化模型完成：
+
+- `ProgressEvent`
+- `ExportResult`
+
+这样 GUI 才能稳定显示：
+
+- 当前进度
+- 错误信息
+- 输出目录
+- 导出文件数量
+
+### 5.4 后台执行必须与主线程分离
+
+Playwright 页面抓取属于耗时操作。  
+如果直接在 GUI 主线程里运行，会导致窗口卡死。
+
+因此约定：
+
+- GUI 主线程只负责界面更新
+- 导出任务统一放在 `gui_worker.py` 中执行
+- 后台线程通过 Qt Signal 向主窗口回传状态
+
+---
+
+## 6. 关键模块说明
+
+### 6.1 `domain`
+
+#### `entities.py`
+保存领域实体，包括：
+
+- `MermaidDiagram`
+- `ChatBlockContent`
+- `ChatLog`
+- `WikiPage`
+- `WikiSite`
+
+这些对象用于表达业务语义，而不是用户界面语义。
+
+#### `export_models.py`
+用于定义导出过程中的结构化模型，例如：
+
+- `ProgressEvent`
+- `ExportResult`
+- `ProgressReporter`
+
+这是 GUI 和业务层之间的重要桥梁。
+
+#### `url_parser.py`
+负责识别：
+
+- `https://deepwiki.com/search/...` 为 Chat
+- `https://deepwiki.com/<org>/<repo>` 为 Wiki
+
+### 6.2 `gateway`
+
+#### `web_adapter.py`
+- 使用 Playwright 加载页面
+- 等待动态内容渲染完成
+- 返回页面 HTML
+
+#### `html_adapter.py`
+- 使用 BeautifulSoup 解析 HTML
+- 提取 chat block
+- 提取 wiki 导航
+- 提取 Mermaid 图
+- 生成图像占位符
+
+#### `markdown_adapter.py`
+- 使用 `markdownify` 将 HTML 转换为 Markdown
+
+#### `file_adapter.py`
+- 创建目录
+- 写入文件
+- 回传保存状态
+
+### 6.3 `repository`
+
+仓储层对外暴露更稳定的操作接口，避免上层直接依赖第三方库实现细节。
+
+例如：
+
+- `WebRepository.fetch_content`
+- `HtmlRepository.extract_chat_blocks`
+- `MarkdownRepository.convert_chat_log_to_markdown`
+- `FileRepository.save_markdown`
+
+### 6.4 `usecase`
+
+#### `chat_page_usecase.py`
+负责：
+
+1. 解析 chat URL
+2. 建立输出目录
+3. 拉取页面
+4. 提取 chat block
+5. 转换为 Markdown
+6. 落盘保存
+7. 返回 `ExportResult`
+
+#### `wiki_site_usecase.py`
+负责：
+
+1. 解析 wiki URL
+2. 建立输出目录
+3. 拉取 Wiki 首页
+4. 提取页面导航
+5. 逐页抓取和导出
+6. 生成 `index.md`
+7. 返回 `ExportResult`
+
+### 6.5 `interface`
+
+#### `bootstrap.py`
+统一组装依赖：
+
+- adapter
+- repository
+- usecase
+
+这样 GUI 层不需要知道底层对象如何初始化。
+
+#### `gui_worker.py`
+负责后台执行流程，包括：
+
+- 创建独立 asyncio 运行环境
+- 调用 usecase
+- 发送进度信号
+- 发送完成或失败信号
+
+#### `gui_app.py`
+负责：
+
+- 构建界面
+- 展示输入控件
+- 展示日志区
+- 调用 worker
+- 显示最终导出结果
+
+---
+
+## 7. 开发环境
+
+### 7.1 基础要求
+
+建议环境：
+
+- Python 3.12
+- Windows 10 / Windows 11
+- PowerShell
+- 已安装 Git
+
+### 7.2 安装依赖
 
 ```bash
-# リポジトリのクローン
-git clone https://github.com/suwash/deepwiki-to-md.git
-cd deepwiki-to-md
-code .
-# dev containerを開く
-
-# テストの実行
-./test/size_L/test_chat.sh
-./test/size_L/test_wiki.sh
+python -m pip install -e .
+python -m playwright install chromium
 ```
 
-### 2.2. imageの公開
+### 7.3 启动 GUI
 
 ```bash
-# ホストマシン上で実行
-docker login -u <username>
-./scripts/buildpack.sh
+python -m src.interface.gui_app
 ```
 
-### 2.3. Devcontainer設定
+如果已经配置 GUI 启动入口，也可以使用：
 
-VSCode Devcontainerを使用して、統一された開発環境を提供します。
+```bash
+deepwiki-to-md-gui
+```
 
--   **Pythonバージョン**: 3.12
--   **`.devcontainer/Dockerfile`**:
-    * ベースイメージ: Python 3.12
-    * Playwrightと対応ブラウザ（Chromium）のインストール
-    * システム依存関係（例: `libwebkit2gtk-4.0-dev`, `build-essential`, `curl`）のインストール
--   **`.devcontainer/devcontainer.json`**:
-    * VSCodeとの連携設定（例: `remoteUser`）
-    * 推奨されるVSCode拡張機能:
-        * `ms-python.python` (Python)
-        * `ms-python.pylance` (Pylance)
-        * `charliermarsh.ruff` (Ruff)
-    * フォーマット設定: Ruffを使用したコードの自動整形を有効化します。
-    * GitHub CLI機能の追加。
+---
 
-### 2.4. 開発ツール
+## 8. 打包与发布
 
--   **Rye** (推奨、または Poetry/PDM/pip-tools): Pythonのパッケージングと依存関係管理に使用します。
--   **Ruff**: 高速なPythonリンターおよびフォーマッターとして使用し、コード品質を維持します。
--   **Pytest**: テストフレームワークとして使用し、ユニットテストや統合テストを記述・実行します。
+### 8.1 Windows 打包
 
-## 3. テスト戦略
+项目使用 `scripts/build_windows.ps1` 构建 Windows GUI 可执行程序。
 
-品質の高いソフトウェアを提供するため、多層的なテスト戦略を採用します。
+执行方式：
 
-### 3.1. テストサイズによる分類
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
 
-テストはそのスコープと依存関係の範囲に応じて分類します。
+### 8.2 打包原则
 
--   **Sサイズテスト (ユニットテスト)** (`test/size_S/`)
-    * Pytestを使用し、インメモリで完結するテストを記述します。
-    * 外部依存（ファイルシステム、ネットワーク、外部ライブラリの具象実装）はモックを使用します。
-    * 個々の関数やクラスメソッドのロジックを検証します。
--   **Mサイズテスト (統合テスト)** (`test/size_M/`)
-    * Pytestを使用し、複数のコンポーネント間の連携をテストします。
-    * ファイルシステム操作や、ローカルで完結する範囲の外部ライブラリ（モック化が困難または不適切な場合）との結合を含みます。
-    * localhost内で完結するテストとします。
--   **Lサイズテスト (E2Eテスト/システムテスト)** (`test/size_L/`)
-    * システムのエントリーポイント（CLI）から実行し、全体の動作を確認します。
-    * 実際のDeepWikiサイト（テスト用または公開サイト）へのアクセスを含みます。
-    * ハッピーパス（正常系）の動作確認を主目的とします。
+当前推荐使用：
 
-### 3.2. レイヤーごとのSサイズテストの焦点
+- `PyInstaller`
+- `--onedir`
 
--   **ユースケース層**:
-    * ドメイン層のエンティティやロジック、リポジトリを正しく組み合わせて、期待される結果を生成できるかテストします。依存するアダプターはモック化します。
-    * ハッピーパスを中心にテストし、検出されたバグについては回帰テストとしてケースを追加します。
--   **ドメイン層**:
-    * エンティティのメソッドやビジネスロジックを網羅的にテストします。
--   **リポジトリ層**:
-    * アダプターからのデータを受け取り、ドメインオブジェクトへ正しく変換できるか、またはその逆をテストします。アダプターはモック化します。
-    * このテストはユースケース層からのテストに含めて実施することも可能です。
--   **ゲートウェイ層**:
-    * 外部ライブラリの呼び出し方が正しいか、ライブラリからの戻り値を期待通りに処理できるかをテストします。外部ライブラリ自体はモック化します。
-    * このテストはリポジトリ層またはユースケース層からのテストに含めて実施することも可能です。
+不建议首版就强行做单文件 exe，原因包括：
 
-### 3.3. テストのルール
+- Playwright/Chromium 资源较重
+- 调试困难
+- 更容易出现运行环境兼容问题
 
--   **テストは実行可能な仕様書を目指します**:
-    * テストコード自体が、対象機能の仕様を明確に表現するようにします。
-    * ループや複雑な分岐は避け、テストケースをシンプルに保ちます。
-    * 期待値や入力値は原則としてベタ書きします。可読性や保守性のために変数を使用することは許容します。
--   **Given / When / Then (または Arrange / Act / Assert) 形式でステップを記述します**:
-    * テストの前提条件 (Given/Arrange)、実行する操作 (When/Act)、期待される結果 (Then/Assert) を明確に分離します。
--   **テスト関数名でテストケースの内容がわかるようにします**:
-    * 例: `test_{対象クラス名}_{対象メソッド名}_引数がNoneの場合_例外が発生すること`
+### 8.3 发布物建议
 
-### 3.4. テストの実行方法
+建议发布整个目录：
 
-- Lサイズテスト
-  - **`./test/size_L/test_chat.sh, test_wiki.sh`**:
-    - 特定の固定URLを使用して`deepwiki-to-md chat`コマンドを実行します。
-    - 出力されたMarkdownファイルや画像ファイルの内容が、期待される結果（スナップショットなど）と一致するかを検証します。
-    - 終了コード:
-      - `0`: 成功
-      - `0以外`: 失敗
+```text
+dist\DeepWikiExporter\
+```
 
-## 4. 拡張ポイント
+而不是只发布单个 exe 文件。
 
-クリーンアーキテクチャと疎結合な設計により、将来的な機能拡張や変更に柔軟に対応できます。
+---
 
-### 4.1. 新規機能追加
+## 9. 测试策略
 
--   既存のアーキテクチャパターン（ドメイン、ユースケース、リポジトリ、ゲートウェイ、インターフェース）に従うことで、新しい機能（例: 新しいDeepWikiのコンテンツタイプへの対応、異なる出力形式のサポート）を体系的に追加できます。
--   CLIインターフェースも既存のコマンドパターン（サブコマンド、URL、オプション）に沿って拡張できます。
+当前仓库以 GUI-only 形态维护，现阶段主要保留 S 级和 M 级测试。
 
-### 4.2. テスト容易性
+### 9.1 测试目标
 
--   各レイヤーが明確に分離されているため、モックオブジェクトを使用した単体テストが容易です。
--   `src/test_integration.py` (Mサイズテストの例) のように、特定コンポーネント間の統合テストも効率的に実装できます。
+测试的重点不是“GUI 按钮有没有长出来”，而是：
 
-### 4.3. インフラストラクチャ（外部ライブラリ）の切り替え
+- URL 是否能正确识别模式
+- chat/wiki 导出逻辑是否正确
+- Mermaid 图是否能被正确保存
+- 输出文件路径与内容是否符合预期
+- 进度和结果模型是否稳定
 
--   特定の外部ライブラリの仕様変更や、より優れた代替ライブラリへの移行が必要になった場合、影響範囲は主にゲートウェイ層のアダプタークラスに限定されます。
-    * 例: Playwrightの代わりにSeleniumを使用する場合、`WebAdapter`の実装を変更し、インターフェース（メソッドシグネチャ）を維持すれば、上位レイヤーへの影響は最小限で済みます。
-    * 例: markdownifyの代わりに別のHTML→Markdown変換ライブラリを使用する場合、`MarkdownAdapter`の実装を変更します。
+### 9.2 推荐测试分层
 
-### 4.4. 出力形式のカスタマイズ
+#### S 级测试（单元测试）
+当前仓库已包含这一级测试，适合测试：
 
--   ファイル命名規則やディレクトリ構造を変更したい場合は、主にユースケース層のURL解析ロジックや出力パス生成ロジックの修正で対応可能です。
--   ユーザーがテンプレートを指定して出力形式をカスタマイズできるような機能を追加する場合、Markdown変換処理を担当するリポジトリやアダプター、およびユースケース層に拡張を加えることになります。CLIにも新たなオプションを追加します。
+- `url_parser.py`
+- `export_models.py`
+- `entities.py` 中纯逻辑方法
+
+#### M 级测试（集成测试）
+当前仓库已包含这一级测试，适合测试：
+
+- `bootstrap.py`
+- usecase 与 repository 的联动
+- 文件输出路径生成逻辑
+
+#### L 级测试（端到端测试）
+这一级测试目前可作为后续扩展方向，适合测试：
+
+- 实际访问 DeepWiki 页面
+- 导出 Markdown 与 SVG 文件
+- 快照比对
+
+当前仓库默认不再依赖旧的 CLI 测试脚本。
+
+### 9.3 GUI 测试建议
+
+GUI 本身首版建议只做轻量验证：
+
+- 窗口能否启动
+- 输入 URL 后是否能识别模式
+- 点击导出后是否能收到完成信号
+- 日志区是否能显示进度消息
+
+不要在早期把大量测试精力投入到控件像素级验证上。
+
+---
+
+## 10. 常见开发注意事项
+
+### 10.1 不要把业务逻辑写进 GUI
+
+如果你发现自己在 `gui_app.py` 里开始处理：
+
+- URL 分支判断
+- 页面抓取细节
+- 输出目录规则
+- Markdown 内容拼装
+
+说明职责已经越界，需要回收到底层模块。
+
+### 10.2 不要在多个地方重复解析 URL
+
+所有 URL 识别规则必须收口到 `url_parser.py`。
+
+### 10.3 不要让 adapter 层直接决定界面行为
+
+adapter 层只能发出结构化进度或异常，不能直接依赖 GUI 组件。
+
+### 10.4 修改 HTML 解析规则时要留意兼容性
+
+DeepWiki 页面结构可能会变化。  
+当页面解析失效时，优先检查：
+
+- chat block 选择器
+- wiki 导航选择器
+- Mermaid 图提取选择器
+
+通常这类问题发生在：
+
+- `html_adapter.py`
+- `html_repository.py`
+
+---
+
+## 11. 扩展方向
+
+未来如果继续扩展，本项目比较适合沿以下方向演进：
+
+### 11.1 导出结果预览
+在 GUI 中增加导出结果预览能力，例如：
+
+- 导出成功后显示 Markdown 文件列表
+- 支持点击后打开文件
+- 支持快速预览生成内容
+
+### 11.2 导出任务历史记录
+保存历史导出记录，例如：
+
+- 最近导出的 URL
+- 最近的输出目录
+- 最近一次导出时间
+
+### 11.3 可配置导出规则
+未来可以增加 GUI 设置项，例如：
+
+- 是否覆盖已有输出
+- 是否保留原始 HTML
+- 是否启用更严格的文件命名规则
+
+### 11.4 更完善的错误诊断
+未来可以增加：
+
+- 错误分类提示
+- 网络异常提示
+- 页面结构变化提示
+- Chromium 缺失提示
+
+---
+
+## 12. 开发工作流建议
+
+推荐开发顺序如下：
+
+1. 先改业务层和导出流程
+2. 再补结构化进度与结果模型
+3. 然后再接入 GUI
+4. 最后处理打包脚本与文档
+
+如果某次修改涉及页面解析规则，优先验证：
+
+1. chat 导出是否仍正常
+2. wiki 导出是否仍正常
+3. Mermaid 图是否仍能保存
+4. GUI 是否仍能收到正确完成状态
+
+---
+
+## 13. 维护说明
+
+本项目依赖 DeepWiki 页面结构。  
+如果 DeepWiki 前端结构发生变化，最容易受影响的模块是：
+
+- `src/gateway/html_adapter.py`
+- `src/repository/html_repository.py`
+
+如果出现“页面能打开但导出为空”这类问题，优先从这两层开始排查，而不是先怀疑 GUI。
+
+---
+
+## 14. 总结
+
+`deepwiki-to-md-gui` 的核心思路是：
+
+- 用 GUI 提升使用体验
+- 用分层设计保持核心逻辑可维护
+- 用结构化结果和进度桥接界面与业务
+- 用后台线程保证 Playwright 导出过程不阻塞界面
+
+只要继续保持“GUI 薄、业务稳、解析集中”的原则，后续扩展成本会低很多。
