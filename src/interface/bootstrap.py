@@ -5,7 +5,7 @@
 Shared dependency bootstrap for CLI and GUI.
 """
 
-from src.domain.export_models import ProgressReporter
+from src.domain.export_models import CancellationToken, ProgressReporter
 from src.gateway.file_adapter import FileAdapter
 from src.gateway.html_adapter import HtmlAdapter
 from src.gateway.markdown_adapter import MarkdownAdapter
@@ -18,15 +18,23 @@ from src.usecase.chat_page_usecase import ConvertChatPageToMarkdownUsecase
 from src.usecase.wiki_site_usecase import ConvertWikiSiteToMarkdownUsecase
 
 
-def build_usecases(progress_callback=None) -> dict:
+def build_usecases(
+    progress_callback=None,
+    cancellation_token: CancellationToken | None = None,
+    reporter_context: dict | None = None,
+) -> dict:
     """
     Builds all usecases in one place.
 
     This keeps CLI and GUI from maintaining duplicated wiring logic.
     """
-    reporter = ProgressReporter(progress_callback)
+    reporter = ProgressReporter(progress_callback, default_context=reporter_context)
+    cancellation_token = cancellation_token or CancellationToken()
 
-    web_adapter = WebAdapter(progress_reporter=reporter)
+    web_adapter = WebAdapter(
+        progress_reporter=reporter,
+        cancellation_token=cancellation_token,
+    )
     html_adapter = HtmlAdapter()
     markdown_adapter = MarkdownAdapter()
     file_adapter = FileAdapter(progress_reporter=reporter)
@@ -43,6 +51,7 @@ def build_usecases(progress_callback=None) -> dict:
             markdown_repository,
             file_repository,
             progress_reporter=reporter,
+            cancellation_token=cancellation_token,
         ),
         "wiki": ConvertWikiSiteToMarkdownUsecase(
             web_repository,
@@ -50,5 +59,6 @@ def build_usecases(progress_callback=None) -> dict:
             markdown_repository,
             file_repository,
             progress_reporter=reporter,
+            cancellation_token=cancellation_token,
         ),
     }

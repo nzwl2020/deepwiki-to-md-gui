@@ -4,12 +4,24 @@
 
 `deepwiki-to-md-gui` 是一个用于导出 DeepWiki 内容的桌面图形化工具。
 
-项目目标是将 DeepWiki 上的两类内容导出到本地 Markdown 文件中：
+项目目标是把 DeepWiki 上的两类内容导出到本地 Markdown 文件中：
 
 1. 仓库解读文档（Wiki）
 2. 用户会话记录（Chat）
 
 本 fork 版本以 **Windows 桌面 GUI 使用体验** 为核心，不再以 Docker 或命令行工具作为主要交付方式。
+
+当前版本已经支持：
+
+- 批量 URL 队列导出
+- 结构化进度回传
+- 取消导出与失败重试
+- 历史记录和 Markdown 预览
+- 环境自检
+- 导出选项面板
+- Wiki 页面筛选
+- 增量导出
+- 合并版 Wiki 文档
 
 ---
 
@@ -24,13 +36,15 @@
 - 让抓取、解析、导出逻辑可单独测试
 - 降低未来替换 GUI 框架或网页抓取实现的成本
 - 保持 chat / wiki 两条导出链路在结构上统一
+- 让任务级导出选项和队列控制贯穿整个调用链
 
 ### 2.2 分层结构
 
 ```mermaid
 graph TD
-    UI["界面层 interface"] --> UC["用例层 usecase"]
+    UI["界面层 interface"] --> WORKER["后台任务层 gui_worker"]
     UI --> BOOT["装配层 bootstrap"]
+    WORKER --> UC["用例层 usecase"]
     UC --> DOMAIN["领域层 domain"]
     UC --> REPO["仓储层 repository"]
     REPO --> GATEWAY["网关层 gateway"]
@@ -41,10 +55,11 @@ graph TD
 
 | 层级 | 目录 | 职责 |
 |------|------|------|
-| 界面层 | `src/interface` | 提供 GUI 入口、后台任务线程、日志显示、用户输入处理 |
-| 用例层 | `src/usecase` | 组织 chat/wiki 导出流程，协调仓储层与领域层 |
-| 领域层 | `src/domain` | 定义核心实体、URL 解析规则、导出结果模型 |
-| 仓储层 | `src/repository` | 连接业务逻辑与具体实现，负责数据转换与流程拼装 |
+| 界面层 | `src/interface` | GUI 入口、导出选项、页面筛选、历史记录、预览、自检 |
+| 后台任务层 | `src/interface/gui_worker.py` | 队列调度、取消控制、逐任务结果汇总 |
+| 用例层 | `src/usecase` | 组织 chat/wiki 导出流程，处理增量导出和页面选择 |
+| 领域层 | `src/domain` | 定义实体、任务模型、导出结果、URL 规则、取消令牌 |
+| 仓储层 | `src/repository` | 连接业务逻辑与具体实现，负责内容提取和 Markdown 生成 |
 | 网关层 | `src/gateway` | 封装 Playwright、文件系统、Markdown 转换等外部能力 |
 
 ---
@@ -92,140 +107,158 @@ src/
 
 - `src/interface/gui_app.py`
   - GUI 主窗口入口
-  - 负责输入 URL、选择输出目录、显示日志、展示结果
+  - 管理 URL 队列、导出选项、Wiki 页面筛选、历史记录、预览和自检
 - `src/interface/gui_worker.py`
-  - 在后台线程中执行导出任务
-  - 防止 Playwright 抓取过程阻塞主线程
+  - 在后台线程中执行导出任务队列
+  - 汇总 `TaskOutcome` 和 `BatchExportResult`
 - `src/interface/bootstrap.py`
   - 统一组装 adapter / repository / usecase
-  - 避免 GUI 层直接依赖底层实现细节
-- `src/domain/url_parser.py`
-  - 统一识别 DeepWiki URL 类型
-  - 自动判断是 `chat` 还是 `wiki`
+  - 将取消令牌和进度上下文注入到导出链路
 - `src/domain/export_models.py`
-  - 定义 `ExportResult`、`ProgressEvent` 等结构化模型
+  - 定义 `ExportTask`、`ExportOptions`、`ExportResult`、`ProgressEvent`
 - `src/usecase/chat_page_usecase.py`
-  - 负责 Chat 导出业务流程
+  - 负责 Chat 导出和 Chat 的增量复用策略
 - `src/usecase/wiki_site_usecase.py`
-  - 负责 Wiki 导出业务流程
+  - 负责 Wiki 导出、导航发现、页面筛选、增量导出、目录页和合并文档
 
 ---
 
 ## 4. 主要数据流
 
-### 4.1 Chat 导出流程
+### 4.1 队列导出总流程
 
 ```mermaid
 sequenceDiagram
     participant User as 用户
     participant GUI as interface.gui_app
     participant Worker as interface.gui_worker
-    participant Usecase as usecase.chat_page_usecase
-    participant WebRepo as repository.web_repository
-    participant HtmlRepo as repository.html_repository
-    participant MdRepo as repository.markdown_repository
-    participant FileRepo as repository.file_repository
-    participant WebAdapter as gateway.web_adapter
-    participant HtmlAdapter as gateway.html_adapter
-    participant MdAdapter as gateway.markdown_adapter
-    participant FileAdapter as gateway.file_adapter
+    participant Bootstrap as interface.bootstrap
+    participant Usecase as usecase.chat/wiki
 
-    User->>GUI: 输入 URL 和输出目录
-    GUI->>Worker: 启动后台导出任务
-    Worker->>Usecase: execute(url, output_dir)
-
-    Usecase->>WebRepo: fetch_content(url)
-    WebRepo->>WebAdapter: fetch(url)
-    WebAdapter-->>WebRepo: page_html
-    WebRepo-->>Usecase: page_html
-
-    Usecase->>HtmlRepo: extract_chat_blocks(page_html, output_dir)
-    HtmlRepo-->>Usecase: chat_blocks
-
-    Usecase->>MdRepo: convert_chat_log_to_markdown(chat_log)
-    MdRepo-->>Usecase: markdown_text
-
-    Usecase->>FileRepo: save_markdown(markdown_text, filepath)
-    FileRepo->>FileAdapter: write_file(filepath, content)
-
+    User->>GUI: 输入 URL 列表与导出选项
+    GUI->>GUI: 组装 ExportTask 列表
+    GUI->>Worker: 启动后台导出任务队列
+    Worker->>Bootstrap: build_usecases(...)
+    Worker->>Usecase: execute(task)
     Usecase-->>Worker: ExportResult
-    Worker-->>GUI: 发送进度与完成信号
-    GUI-->>User: 显示完成结果
+    Worker-->>GUI: ProgressEvent / TaskOutcome / BatchExportResult
+    GUI-->>User: 展示日志、进度、历史与预览
 ```
 
-### 4.2 Wiki 导出流程
+### 4.2 Chat 导出流程
 
-Wiki 导出和 Chat 类似，但会多出一个“导航解析 + 多页面抓取”过程：
+```mermaid
+sequenceDiagram
+    participant Worker as gui_worker
+    participant Usecase as chat_page_usecase
+    participant WebRepo as web_repository
+    participant HtmlRepo as html_repository
+    participant MdRepo as markdown_repository
+    participant FileRepo as file_repository
+
+    Worker->>Usecase: execute(task)
+    Usecase->>Usecase: 检查 incremental_export
+    Usecase->>WebRepo: fetch_content(url)
+    WebRepo-->>Usecase: page_html
+    Usecase->>HtmlRepo: extract_chat_blocks(..., include_code_references, export_mermaid_diagrams)
+    HtmlRepo-->>Usecase: chat_blocks
+    Usecase->>MdRepo: convert_chat_log_to_markdown(chat_log)
+    MdRepo-->>Usecase: markdown_text
+    Usecase->>FileRepo: save_markdown(...)
+    Usecase-->>Worker: ExportResult
+```
+
+### 4.3 Wiki 导出流程
+
+Wiki 导出现在包含额外的策略步骤：
 
 1. 访问 Wiki 首页
 2. 提取导航链接
-3. 逐页抓取和解析
-4. 导出每个页面的 Markdown
-5. 生成 `index.md`
-6. 返回最终导出结果
+3. 根据 `selected_wiki_page_urls` 过滤页面
+4. 根据 `incremental_export` 决定是否复用已有页面 Markdown
+5. 导出每个页面
+6. 按选项决定是否生成 `index.md`
+7. 按选项决定是否生成合并版 `wiki.md`
+8. 返回 `ExportResult`
 
 ---
 
 ## 5. 核心设计约定
 
-### 5.1 GUI 只负责界面，不负责业务实现
+### 5.1 GUI 负责交互编排，不负责导出业务规则
 
-GUI 层只做这些事：
+GUI 层可以负责：
 
 - 接收用户输入
+- 组装 `ExportTask`
+- 管理导出选项
+- 发起 Wiki 页面选择
 - 启动后台任务
-- 展示日志和结果
-- 提供“打开输出目录”等交互动作
+- 展示日志、历史和预览
 
 GUI 层不应负责：
 
 - URL 解析规则
 - 页面抓取细节
-- HTML 结构解析
+- 增量导出规则
 - Markdown 拼装
-- 文件命名和输出路径规则
+- Wiki 页面输出路径规则
 
 这些能力应保留在 `domain`、`usecase`、`repository`、`gateway` 中。
 
-### 5.2 URL 识别统一放在 `url_parser.py`
+### 5.2 所有任务级选项都通过 `ExportTask` 传递
 
-不要在 GUI、usecase、adapter 中重复解析 URL。  
-统一通过 `parse_deepwiki_url(url)` 得到：
+不要在多个层之间散落布尔参数。  
+当前统一通过：
 
-- 模式：`chat` / `wiki`
-- chat id
-- organization / repository
+- `ExportTask`
+- `ExportOptions`
+- `selected_wiki_page_urls`
+
+来描述一次完整的导出任务。
 
 这样可以保证：
 
-- GUI 的模式识别逻辑和业务执行逻辑一致
-- 后续修改 URL 规则时只改一个地方
+- GUI、Worker、Usecase 使用同一份任务描述
+- 历史记录可以完整恢复任务配置
+- 批量导出和失败重试不丢失选项
 
-### 5.3 进度和结果必须结构化
+### 5.3 进度、取消和结果必须结构化
 
-不要依赖零散的 `print` 文本传递状态。  
-导出流程对 GUI 的反馈应通过结构化模型完成：
+导出流程对 GUI 的反馈统一通过结构化模型完成：
 
 - `ProgressEvent`
 - `ExportResult`
+- `TaskOutcome`
+- `BatchExportResult`
+- `CancellationToken`
 
 这样 GUI 才能稳定显示：
 
-- 当前进度
-- 错误信息
-- 输出目录
-- 导出文件数量
+- 当前任务号
+- 当前阶段
+- 子项进度
+- 跳过数量
+- 预览文件
 
-### 5.4 后台执行必须与主线程分离
+### 5.4 Wiki 页面筛选必须保持文件名稳定
 
-Playwright 页面抓取属于耗时操作。  
-如果直接在 GUI 主线程里运行，会导致窗口卡死。
+选择性导出 Wiki 页面时，页面编号不能因为筛选而重新计算。  
+当前实现会保留页面在原始导航中的序号，这样有两个好处：
 
-因此约定：
+- 文件名稳定
+- 增量导出更可靠
 
-- GUI 主线程只负责界面更新
-- 导出任务统一放在 `gui_worker.py` 中执行
-- 后台线程通过 Qt Signal 向主窗口回传状态
+### 5.5 增量导出优先复用现有 Markdown
+
+当前增量策略比较保守：
+
+- Chat：如果 `chat.md` 已存在，则直接复用
+- Wiki：如果页面 Markdown 已存在，则复用页面文件
+- 如果启用了合并版 Wiki，则会优先读取已有页面 Markdown 来重新拼接 `wiki.md`
+
+这套策略避免重新抓取，但不做内容变更检测。  
+如果未来要做更严格的增量机制，可以再引入页面 hash 或元数据索引。
 
 ---
 
@@ -234,6 +267,7 @@ Playwright 页面抓取属于耗时操作。
 ### 6.1 `domain`
 
 #### `entities.py`
+
 保存领域实体，包括：
 
 - `MermaidDiagram`
@@ -242,19 +276,23 @@ Playwright 页面抓取属于耗时操作。
 - `WikiPage`
 - `WikiSite`
 
-这些对象用于表达业务语义，而不是用户界面语义。
-
 #### `export_models.py`
+
 用于定义导出过程中的结构化模型，例如：
 
+- `ExportOptions`
+- `ExportTask`
 - `ProgressEvent`
 - `ExportResult`
-- `ProgressReporter`
+- `TaskOutcome`
+- `BatchExportResult`
+- `CancellationToken`
 
-这是 GUI 和业务层之间的重要桥梁。
+这是 GUI、Worker 和业务层之间的主要桥梁。
 
 #### `url_parser.py`
-负责识别：
+
+负责统一识别：
 
 - `https://deepwiki.com/search/...` 为 Chat
 - `https://deepwiki.com/<org>/<repo>` 为 Wiki
@@ -262,11 +300,14 @@ Playwright 页面抓取属于耗时操作。
 ### 6.2 `gateway`
 
 #### `web_adapter.py`
+
 - 使用 Playwright 加载页面
 - 等待动态内容渲染完成
+- 在关键阶段检查取消令牌
 - 返回页面 HTML
 
 #### `html_adapter.py`
+
 - 使用 BeautifulSoup 解析 HTML
 - 提取 chat block
 - 提取 wiki 导航
@@ -274,11 +315,14 @@ Playwright 页面抓取属于耗时操作。
 - 生成图像占位符
 
 #### `markdown_adapter.py`
+
 - 使用 `markdownify` 将 HTML 转换为 Markdown
 
 #### `file_adapter.py`
+
 - 创建目录
 - 写入文件
+- 读取已有 Markdown
 - 回传保存状态
 
 ### 6.3 `repository`
@@ -289,60 +333,72 @@ Playwright 页面抓取属于耗时操作。
 
 - `WebRepository.fetch_content`
 - `HtmlRepository.extract_chat_blocks`
-- `MarkdownRepository.convert_chat_log_to_markdown`
+- `HtmlRepository.process_wiki_page_content`
+- `MarkdownRepository.generate_wiki_index`
+- `MarkdownRepository.generate_merged_wiki`
 - `FileRepository.save_markdown`
 
 ### 6.4 `usecase`
 
 #### `chat_page_usecase.py`
+
 负责：
 
 1. 解析 chat URL
 2. 建立输出目录
-3. 拉取页面
-4. 提取 chat block
-5. 转换为 Markdown
-6. 落盘保存
-7. 返回 `ExportResult`
+3. 判断是否走增量复用
+4. 拉取页面
+5. 按选项提取 chat block
+6. 转换为 Markdown
+7. 落盘保存
+8. 返回 `ExportResult`
 
 #### `wiki_site_usecase.py`
+
 负责：
 
 1. 解析 wiki URL
 2. 建立输出目录
-3. 拉取 Wiki 首页
-4. 提取页面导航
-5. 逐页抓取和导出
-6. 生成 `index.md`
-7. 返回 `ExportResult`
+3. 发现导航
+4. 根据页面筛选条件过滤
+5. 根据增量选项复用已有页面
+6. 逐页抓取和导出
+7. 根据选项生成 `index.md`
+8. 根据选项生成 `wiki.md`
+9. 返回 `ExportResult`
 
 ### 6.5 `interface`
 
 #### `bootstrap.py`
+
 统一组装依赖：
 
 - adapter
 - repository
 - usecase
-
-这样 GUI 层不需要知道底层对象如何初始化。
+- cancellation token
+- progress reporter context
 
 #### `gui_worker.py`
+
 负责后台执行流程，包括：
 
 - 创建独立 asyncio 运行环境
+- 执行任务队列
 - 调用 usecase
-- 发送进度信号
-- 发送完成或失败信号
+- 汇总任务结果
+- 发送进度、完成或失败信号
 
 #### `gui_app.py`
+
 负责：
 
 - 构建界面
-- 展示输入控件
-- 展示日志区
-- 调用 worker
-- 显示最终导出结果
+- 读取和保存导出选项
+- 读取和保存 Wiki 页面过滤条件
+- 管理历史记录
+- 启动 Worker
+- 显示最终导出结果和 Markdown 预览
 
 ---
 
@@ -403,80 +459,75 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 - 调试困难
 - 更容易出现运行环境兼容问题
 
-### 8.3 发布物建议
-
-建议发布整个目录：
-
-```text
-dist\DeepWikiExporter\
-```
-
-而不是只发布单个 exe 文件。
-
 ---
 
 ## 9. 测试策略
 
 当前仓库以 GUI-only 形态维护，现阶段主要保留 S 级和 M 级测试。
 
-### 9.1 测试目标
+### 9.1 测试重点
 
-测试的重点不是“GUI 按钮有没有长出来”，而是：
+测试重点不是“按钮有没有显示”，而是：
 
 - URL 是否能正确识别模式
+- 任务模型和导出选项是否稳定
 - chat/wiki 导出逻辑是否正确
-- Mermaid 图是否能被正确保存
-- 输出文件路径与内容是否符合预期
+- 增量导出是否按预期跳过
+- 合并版 Wiki 是否保持顺序和目录
 - 进度和结果模型是否稳定
 
 ### 9.2 推荐测试分层
 
 #### S 级测试（单元测试）
-当前仓库已包含这一级测试，适合测试：
+
+适合测试：
 
 - `url_parser.py`
 - `export_models.py`
+- `markdown_repository.py`
 - `entities.py` 中纯逻辑方法
 
 #### M 级测试（集成测试）
-当前仓库已包含这一级测试，适合测试：
+
+适合测试：
 
 - `bootstrap.py`
 - usecase 与 repository 的联动
 - 文件输出路径生成逻辑
+- 增量导出行为
 
 #### L 级测试（端到端测试）
-这一级测试目前可作为后续扩展方向，适合测试：
+
+后续可以扩展：
 
 - 实际访问 DeepWiki 页面
 - 导出 Markdown 与 SVG 文件
+- 队列导出和取消操作
 - 快照比对
-
-当前仓库默认不再依赖旧的 CLI 测试脚本。
 
 ### 9.3 GUI 测试建议
 
-GUI 本身首版建议只做轻量验证：
+GUI 本身建议只做轻量验证：
 
 - 窗口能否启动
 - 输入 URL 后是否能识别模式
+- 选项是否能持久化
+- Wiki 页面选择是否能保存
 - 点击导出后是否能收到完成信号
-- 日志区是否能显示进度消息
-
-不要在早期把大量测试精力投入到控件像素级验证上。
+- 预览区是否能打开最新 Markdown
 
 ---
 
 ## 10. 常见开发注意事项
 
-### 10.1 不要把业务逻辑写进 GUI
+### 10.1 不要把抓取和导出规则写进 GUI
 
 如果你发现自己在 `gui_app.py` 里开始处理：
 
-- URL 分支判断
 - 页面抓取细节
-- 输出目录规则
-- Markdown 内容拼装
+- 增量导出判断
+- Markdown 拼装
+- 页面文件命名
 
 说明职责已经越界，需要回收到底层模块。
 
@@ -502,40 +553,43 @@ DeepWiki 页面结构可能会变化。
 - `html_adapter.py`
 - `html_repository.py`
 
+### 10.5 修改增量导出时要留意稳定文件名
+
+增量导出依赖页面文件名稳定。  
+如果修改了 `WikiPage.get_filename()` 或选择性导出的页码规则，需要同步验证：
+
+1. 已有 Wiki 页面是否还能被正确复用
+2. `wiki.md` 是否还能按预期拼接旧页面
+3. 页面筛选前后文件名是否一致
+
 ---
 
-## 11. 扩展方向
+## 11. 后续扩展方向
 
-未来如果继续扩展，本项目比较适合沿以下方向演进：
+后续如果继续扩展，比较合适的方向包括：
 
-### 11.1 导出结果预览
-在 GUI 中增加导出结果预览能力，例如：
+### 11.1 更严格的增量检测
 
-- 导出成功后显示 Markdown 文件列表
-- 支持点击后打开文件
-- 支持快速预览生成内容
+- 为每个页面保存 hash 或元数据
+- 对比页面变化后再决定是否跳过
 
-### 11.2 导出任务历史记录
-保存历史导出记录，例如：
+### 11.2 导出诊断包
 
-- 最近导出的 URL
-- 最近的输出目录
-- 最近一次导出时间
+- 导出失败时保存原始 HTML
+- 保存页面选择和任务选项
+- 方便排查 DeepWiki 页面结构变化
 
-### 11.3 可配置导出规则
-未来可以增加 GUI 设置项，例如：
+### 11.3 更细粒度的合并策略
 
-- 是否覆盖已有输出
-- 是否保留原始 HTML
-- 是否启用更严格的文件命名规则
+- 允许只合并选中的部分页面
+- 允许自定义合并顺序
+- 允许为合并版添加 front matter
 
-### 11.4 更完善的错误诊断
-未来可以增加：
+### 11.4 更完整的 GUI 自动化测试
 
-- 错误分类提示
-- 网络异常提示
-- 页面结构变化提示
-- Chromium 缺失提示
+- 使用 Qt 测试工具验证历史记录恢复
+- 验证页面选择对话框
+- 验证导出选项面板的状态恢复
 
 ---
 
@@ -543,17 +597,18 @@ DeepWiki 页面结构可能会变化。
 
 推荐开发顺序如下：
 
-1. 先改业务层和导出流程
-2. 再补结构化进度与结果模型
-3. 然后再接入 GUI
-4. 最后处理打包脚本与文档
+1. 先改 `domain` 和 `usecase`
+2. 再补 `repository` / `gateway`
+3. 然后再接入 `gui_worker`
+4. 最后处理 `gui_app.py`、打包脚本和文档
 
 如果某次修改涉及页面解析规则，优先验证：
 
 1. chat 导出是否仍正常
 2. wiki 导出是否仍正常
-3. Mermaid 图是否仍能保存
-4. GUI 是否仍能收到正确完成状态
+3. 页面筛选后的导出是否仍正常
+4. Mermaid 图是否仍能保存或正确省略
+5. 增量复用是否仍然可靠
 
 ---
 
@@ -564,18 +619,20 @@ DeepWiki 页面结构可能会变化。
 
 - `src/gateway/html_adapter.py`
 - `src/repository/html_repository.py`
+- `src/usecase/wiki_site_usecase.py`
 
-如果出现“页面能打开但导出为空”这类问题，优先从这两层开始排查，而不是先怀疑 GUI。
+如果出现“页面能打开但导出为空”“页面选择后匹配不到页面”“合并版内容缺失”等问题，优先从这几层开始排查，而不是先怀疑 GUI。
 
 ---
 
 ## 14. 总结
 
-`deepwiki-to-md-gui` 的核心思路是：
+`deepwiki-to-md-gui` 当前的核心思路是：
 
 - 用 GUI 提升使用体验
 - 用分层设计保持核心逻辑可维护
+- 用任务模型统一导出选项和页面选择
 - 用结构化结果和进度桥接界面与业务
 - 用后台线程保证 Playwright 导出过程不阻塞界面
 
-只要继续保持“GUI 薄、业务稳、解析集中”的原则，后续扩展成本会低很多。
+只要继续保持“GUI 负责交互编排、Usecase 负责导出策略、解析规则集中管理”的原则，后续扩展成本会低很多。

@@ -48,7 +48,7 @@ Web adapter for fetching web pages using Playwright.
 
 from playwright.async_api import async_playwright
 
-from src.domain.export_models import ProgressReporter
+from src.domain.export_models import CancellationToken, ProgressReporter
 
 
 class WebAdapter:
@@ -59,12 +59,15 @@ class WebAdapter:
     def __init__(
         self,
         progress_reporter: ProgressReporter | None = None,
+        cancellation_token: CancellationToken | None = None,
         timeout_ms: int = 60000,
     ):
         self.progress = progress_reporter or ProgressReporter()
+        self.cancellation_token = cancellation_token or CancellationToken()
         self.timeout_ms = timeout_ms
 
     async def fetch(self, url: str) -> str:
+        self.cancellation_token.raise_if_cancelled()
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -74,9 +77,11 @@ class WebAdapter:
                 # during long-running Playwright work.
                 self.progress.info(f"Navigating to {url}...")
                 await page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+                self.cancellation_token.raise_if_cancelled()
 
                 self.progress.info("Page loaded. Waiting for dynamic content...")
                 await page.wait_for_timeout(1000)
+                self.cancellation_token.raise_if_cancelled()
 
                 self.progress.info("Retrieving page content...")
                 content = await page.content()

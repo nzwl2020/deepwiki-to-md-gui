@@ -8,7 +8,7 @@ HTML adapter for parsing HTML content using BeautifulSoup.
 import re
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup, Tag
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 
 class HtmlAdapter:
@@ -232,39 +232,136 @@ class HtmlAdapter:
             List[Dict[str, str]]: [{"title": "Page Title", "url": "Page URL"}, ...]
         """
         soup = self.parse_html(html_content)
-        navigation_links = []
+        root = soup.select_one("#codebase-wiki-repo-page") or soup.body or soup
 
-        # Use a selector that matches the current DeepWiki navigation structure.
-        # XPath: //*[@id="codebase-wiki-repo-page"]/div[2]/div/div/div[1]/div/ul
-        nav_ul = soup.select_one(
-            "#codebase-wiki-repo-page > div:nth-child(2) > div > div > div:nth-child(1) > div > ul"
-        )
+        selector_candidates = [
+            # Legacy selector kept for backwards compatibility.
+            "#codebase-wiki-repo-page > div:nth-child(2) > div > div > div:nth-child(1) > div > ul",
+            # The current DeepWiki layout uses a flatter sidebar list.
+            "#codebase-wiki-repo-page ul.flex-1.flex-shrink-0.space-y-1.overflow-y-auto.py-1",
+            "#codebase-wiki-repo-page aside ul",
+            "#codebase-wiki-repo-page nav ul",
+        ]
 
-        if nav_ul:
-            # Collect navigation links.
-            for li in nav_ul.find_all("li"):
-                link = li.find("a")
-                if link:
-                    href = link.get("href")
-                    title = link.get_text(strip=True)
+        for selector in selector_candidates:
+            for container in root.select(selector):
+                navigation_links = self._extract_navigation_links_from_container(
+                    container
+                )
+                if navigation_links:
+                    print(
+                        f"Found {len(navigation_links)} navigation links using selector: {selector}"
+                    )
+                    return navigation_links
 
-                    # Process only valid links.
-                    if href and title:
-                        # Convert relative URLs to absolute URLs.
-                        if not href.startswith("http"):
-                            href = urljoin("https://deepwiki.com", href)
-
-                        navigation_links.append({"title": title, "url": href})
-
-            # Log the result when navigation links are found.
-            if navigation_links:
-                print(f"Found {len(navigation_links)} navigation links")
-        else:
+        navigation_links = self._extract_navigation_links_from_all_lists(root)
+        if navigation_links:
             print(
-                "Navigation container not found. Check if the page structure has changed."
+                f"Found {len(navigation_links)} navigation links using fallback list discovery"
+            )
+            return navigation_links
+
+        print(
+            "Navigation container not found. Check if the page structure has changed."
+        )
+        return []
+
+    def _extract_navigation_links_from_container(
+        self,
+        container: Tag,
+    ) -> List[Dict[str, str]]:
+        """
+        Extracts wiki-like links from one navigation container.
+
+        The current DeepWiki DOM is not stable enough to rely on a single CSS
+        path, so this helper validates links by structure and repo prefix.
+        """
+        entries: List[Dict[str, str]] = []
+        seen_urls: set[str] = set()
+
+        for link in container.select("li a[href]"):
+            href = self._normalize_deepwiki_href(link.get("href"))
+            title = link.get_text(strip=True)
+            if not href or not title:
+                continue
+
+            parsed_href = urlparse(href)
+            path_parts = [part for part in parsed_href.path.split("/") if part]
+            if len(path_parts) < 3:
+                continue
+
+            entries.append(
+                {
+                    "title": title,
+                    "url": href,
+                    "prefix": f"{path_parts[0]}/{path_parts[1]}",
+                }
             )
 
-        return navigation_links
+        if not entries:
+            return []
+
+        prefix_counts: Dict[str, int] = {}
+        prefix_order: List[str] = []
+        for entry in entries:
+            prefix = entry["prefix"]
+            if prefix not in prefix_counts:
+                prefix_counts[prefix] = 0
+                prefix_order.append(prefix)
+            prefix_counts[prefix] += 1
+
+        dominant_prefix = max(
+            prefix_order,
+            key=lambda prefix: prefix_counts[prefix],
+        )
+
+        filtered_links: List[Dict[str, str]] = []
+        for entry in entries:
+            if entry["prefix"] != dominant_prefix:
+                continue
+            if entry["url"] in seen_urls:
+                continue
+            seen_urls.add(entry["url"])
+            filtered_links.append({"title": entry["title"], "url": entry["url"]})
+
+        return filtered_links if len(filtered_links) >= 2 else []
+
+    def _extract_navigation_links_from_all_lists(
+        self,
+        root: Tag,
+    ) -> List[Dict[str, str]]:
+        """
+        Searches every list in the wiki root and returns the strongest candidate.
+        """
+        best_links: List[Dict[str, str]] = []
+
+        for container in root.find_all("ul"):
+            candidate_links = self._extract_navigation_links_from_container(container)
+            if len(candidate_links) > len(best_links):
+                best_links = candidate_links
+
+        return best_links
+
+    def _normalize_deepwiki_href(self, href: str | None) -> str | None:
+        """
+        Converts relative wiki links to absolute DeepWiki URLs and filters noise.
+        """
+        if not href:
+            return None
+
+        normalized_href = urljoin("https://deepwiki.com", href)
+        parsed_href = urlparse(normalized_href)
+
+        if parsed_href.netloc not in {"deepwiki.com", "www.deepwiki.com"}:
+            return None
+
+        path_parts = [part for part in parsed_href.path.split("/") if part]
+        if len(path_parts) < 3:
+            return None
+        if path_parts[0] == "search":
+            return None
+
+        return normalized_href
 
     def extract_wiki_content(self, html_content: str) -> str:
         """
